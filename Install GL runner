@@ -1,0 +1,98 @@
+---
+- name: Install Gitlab-Runner
+  hosts: gitlab_runner_server
+  gather_facts: true
+  become: true
+  tasks:
+    - block:
+        - name: Pull image
+        # Пулим образ гитлаб-раннера
+          community.docker.docker_image_pull:
+            name: gitlab/gitlab-runner:ubuntu-v17.8.4
+            platform: amd64
+            pull: "not_present"
+        - name: Get date_time
+        # Получаем время и дату для именования нового контейнера с раннером
+          debug:
+            var: ansible_date_time
+        - name: Start container
+        # Запускаем контейнер докер с раннером гитлаба
+          community.docker.docker_container:
+            detach: true
+            image: gitlab/gitlab-runner:ubuntu-v17.8.4
+            name: "docker-runner" 
+            restart_policy: always
+            env:
+              RUNNER_NAME: "docker-runner" # Имя раннера
+              FF_NETWORK_PER_BUILD: "1" # Под каждый джоб раннер будет создавать свою сеть докер
+            volumes:
+              - /var/run/docker.sock:/var/run/docker.sock
+              - "{{ gitlab_runner_home }}/config:/etc/gitlab-runner"
+              - "{{ gitlab_runner_home }}/logs:/var/log/gitlab"
+              - "{{ gitlab_home }}/config/ssl/gitlab.10-gltest-vsrvcrt:/etc/gitlab-runner/certs/ca.crt"
+            networks:
+              - name: "{{ network_name }}"
+            shm_size: '256m'
+      when: executor_type == "docker"
+    - block:
+    # Проверка на установленность раннера, если раннер уже установлен то переходим сразу к его регистрации
+        - name: Check gitlab-runner
+          command: gitlab-runner --version
+          register: runner_check
+          ignore_errors: true 
+        - block:
+        # Устанавливаем gitlab runner непосредственно на машину, в случае если executor - ssh или shell
+            - name: Add repo to repolist
+            # Скачиваем скрипт в зависимости от семейства ОС
+              get_url:
+                url: https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.{{ item }}.sh
+                dest: "/home/{{ ansible_user }}/script.sh"
+              loop:
+                - "{{ 'deb' if ansible_os_family == 'Debian' else 'rpm' }}"
+              when: ansible_os_family in ['Debian', 'Redhat']
+            - name: update cash debian like
+            # Обновляем кеш в зависимости от семейства ОС
+              ansible.builtin.apt:
+                update_cache: yes
+              when: ansible_os_family == "Debian"
+            - name: update cash redhat like
+            # Обновляем кеш в зависимости от семейства ОС
+              ansible.builtin.yum:
+                update_cache: yes
+              when: ansible_os_family == "RedHat"
+            - name: Add repo Gitlab to repo list
+            # Запускаем скрипт по добавлению Gitlab repo в repo list
+              command: bash "/home/{{ ansible_user }}/script.sh"
+            - name: Install runner
+            # Установка раннера
+              package:
+                name: gitlab-runner
+                state: present
+          when: executor_type in ["ssh", "shell"] and runner_check.rc != 0
+    - block:
+        - name: Get auth token
+          command: cat "{{ gitlab_home }}/{{ executor_type }}/token"
+          register: auth_token
+        - name: Registration of Docker runner
+        # Регистрируем docker раннер полученным токеном
+          command: >
+            docker exec docker-runner gitlab-runner register --non-interactive --url "{{ url_gitlab }}" 
+            --docker-privileged --token "{{ auth_token.stdout }}" --executor "{{ executor_type }}" 
+            --docker-image "ubuntu:20.04" --description "docker-runner" --docker-volumes "/certs/client"
+          when: executor_type == "docker"
+        - name: Registration of shell runner
+        # Регистрируем shell раннер
+          command: >
+            gitlab-runner register --non-interactive --url {{ url_gitlab }} --token {{ auth_token.stdout }} --executor {{ executor_type }} 
+            --description "{{ executor_type }}-runner" --tls-ca-file "{{gitlab_home}}/config/ssl/.crt"
+          when: executor_type == "shell"
+        - name: Registration of ssh runner
+        # Регистрируем ssh раннер
+          command: >
+            gitlab-runner register 
+            --non-interactive --url {{ url_gitlab }} --token {{ auth_token.stdout }} --executor {{ executor_type }} 
+            --description "{{ executor_type }}-runner" 
+            --tls-ca-file "{{gitlab_home}}/config/ssl/gitlab.crt" 
+            --ssh-user {{ ssh_user }} --ssh-identity-file {{ ssh_private }}
+            --ssh-host {{ ansible_host }} --ssh-port {{ ansible_port }}
+          when: executor_type == "ssh"
