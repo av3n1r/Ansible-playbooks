@@ -1,0 +1,69 @@
+#!/bin/bash
+#set -e
+db_name=""
+host="127.0.0.1" # Не менять
+port="5434" # Менять, если меняется инстанс
+user="postgres" # Не менять
+path_to_backups="/mnt/backups/daily/postgresql/17/" # Путь где искать ежедневные бэкапы
+out_smtp=""
+message=""
+if [ -z "$db_name" ]; then
+out_smtp+=$(echo "$(date +%s) didn't enter db name\n" | tee -a log1)
+fi
+log_time(){
+    local start_time=$1
+    local end_time=$(( $(date +%s) - start_time ))
+    local minutes=$((end_time / 60))
+    local seconds=$((end_time % 60))
+    echo "${minutes} min and ${seconds} sec"
+}
+get_date(){
+    echo "$(date "+%d.%m.%Y %H:%M:%S")"
+}
+write_log(){
+    out_smtp+="$message\n"
+    echo -e "$message" >> /home/avenir/log_salary
+}
+start_time=$(date +%s)
+message="  $(get_date) Start deleting exist ${db_name}-test-old"
+write_log
+dropdb -U $user -h $host -p $port "${db_name}-test-old" --if-exists -f
+message="  $(get_date) ${db_name}-test-old droped in a $(log_time $start_time)"
+write_log
+start_time=$(date +%s)
+psql -U $user -h $host -p $port -c "ALTER DATABASE \"${db_name}-test\" RENAME TO \"${db_name}-test-old\";"
+psql -U $user -h $host -p $port -t -A -c "SELECT safe_rename_database('${db_name}-test', '${db_name}-test-old');"
+message="  $(get_date) ${db_name}-test renamed in a $(log_time $start_time)"
+start_time=$(date +%s)
+psql -U $user -h $host -p $port -c "CREATE DATABASE \"${db_name}\" OWNER usr1
+ENCODING UTF8
+LC_COLLATE 'ru_RU.utf8'
+LC_CTYPE 'ru_RU.utf8'
+LOCALE_PROVIDER 'libc'
+TEMPLATE template0
+TABLESPACE 'pg_default'
+CONNECTION LIMIT -1;"
+message="  $(get_date) New ${db_name}-test created in a $(log_time $start_time)"
+write_log
+file_name=$(find "$path_to_backups" -name "${db_name}_$(date -d today +%Y%m%d).backup")
+if [ "$file_name" != "" ]; then
+message="  $(get_date) File $file_name exist"
+write_log
+if pg_restore -l "$file_name" > /dev/null 2>&1; then
+message="  $(get_date) Okay, backup on db layer consistent"
+write_log
+message="  $(get_date) Process of restore ${db_name}-test is start"
+write_log
+start_time=$(date +%s)
+/bin/pg_restore --host $host --port $port --username $user --dbname "${db_name}" -v "$file_name" -j 4
+message="  $(get_date) Process of restore ${db_name}-test is end in a $(log_time $start_time)"
+write_log
+else
+message="  $(get_date) Pisec, otmena, backup on db layer don't consistent"
+write_log
+fi
+else
+message="  $(get_date)  file $file_name don't exist"
+write_log
+fi
+ echo -e "$out_smtp" | mail -s "Отчёт по рестору базы $db_name" -r "" --set=smtp="mail.:25" .ru
