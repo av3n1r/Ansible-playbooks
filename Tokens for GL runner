@@ -1,0 +1,49 @@
+---
+- name: Create tokens
+  hosts: gitlab_runner_server
+  gather_facts: false
+  become: true
+  tasks:
+    - block:
+        - name: Reg path
+    # Проверим нужно ли вообще создавать токены для раннеров, или файлы с токенами есть
+          stat:
+            path: "{{ gitlab_home }}/{{ executor_type }}/token"
+          register: path_to_token
+        - name: Check path
+          meta: end_play
+          when: path_to_token.stat.exists
+        - name: Debug
+          debug:
+            var: path_to_token
+      tags: 
+        - CheckToken
+    - block:
+        - name: Token for runner
+    # Создаем раннера в гитлабе и получаем токен аутентификации
+          ansible.builtin.uri:
+            url: "{{ url_gitlab }}api/v4/user/runners"
+            method: POST
+            body: "runner_type=instance_type&description={{ executor_type }}&tag_list={{ tag_list }}"
+            headers:
+              PRIVATE-TOKEN: "{{ private_token }}"
+            validate_certs: false
+            return_content: true
+            status_code: [200, 201]
+          register: token
+        - name: Create file for token
+        # Создаём папку для хранения токена
+          file:
+            path: "{{ gitlab_home }}/{{ executor_type }}"
+            mode: '0600'
+            state: directory
+            recurse: true
+        - name: Save runner registration token to file
+    # Сохраняем токен регистрации в файл
+          copy:
+            content: "{{ token.json.token }}"
+            dest: "{{ gitlab_home }}/{{ executor_type }}/token"
+            mode: '0600'
+          when: token.json.token is defined
+      tags:
+        - CreateToken
