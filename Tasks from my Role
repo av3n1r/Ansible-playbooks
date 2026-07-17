@@ -1,0 +1,96 @@
+---
+- name: Install docker image in host
+  when: executor_type == "docker"
+  block:
+    - name: Pull image
+    # Пулим образ гитлаб-раннера
+      community.docker.docker_image_pull:
+        name: gitlab/gitlab-runner:ubuntu-v17.8.4
+        platform: amd64
+        pull: "not_present"
+    - name: Start container
+    # Запускаем контейнер докер с раннером гитлаба
+      community.docker.docker_container:
+        detach: true
+        image: gitlab/gitlab-runner:ubuntu-v17.8.4
+        name: "docker-runner"
+        restart_policy: always
+        env:
+          RUNNER_NAME: "docker-runner" # Имя раннера
+          FF_NETWORK_PER_BUILD: "1" # Под каждый джоб раннер будет создавать свою сеть докер
+          CONCURRENT: "5"
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+          - "{{ gitlab_runner_home }}/config:/etc/gitlab-runner"
+          - "{{ gitlab_runner_home }}/logs:/var/log/gitlab"
+          - "{{ gitlab_home }}/config/ssl/{{ cert_name  }}:/etc/gitlab-runner/certs/ca.crt"
+        networks:
+          - name: "{{ network_name }}"
+        shm_size: '256m'
+- name: Install gitlab runner on host
+  when: executor_type in ["ssh", "shell"]
+  block:
+    - name: Check gitlab-runner
+    # Проверка на установленность раннера, если раннер уже установлен то переходим сразу к его регистрации
+      ansible.builtin.command: gitlab-runner --version
+      ignore_errors: true
+      register: runner_check
+      changed_when: false
+    - name: Install gitlab-runner
+    # Устанавливаем gitlab runner непосредственно на машину, в случае если executor - ssh или shell
+      block:
+        - name: Add repo to repolist
+        # Скачиваем скрипт в зависимости от семейства ОС
+          ansible.builtin.get_url:
+            url: https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.{{ item }}.sh
+            dest: "/home/{{ ansible_user }}/script.sh"
+            mode: '0755'
+          loop:
+            - "{{ 'deb' if ansible_os_family == 'Debian' else 'rpm' }}"
+          when: ansible_os_family in ['Debian', 'Redhat']
+        - name: Update cash debian like
+        # Обновляем кеш в зависимости от семейства ОС
+          ansible.builtin.apt:
+            update_cache: true
+          when: ansible_os_family == "Debian"
+        - name: Update cash redhat like
+        # Обновляем кеш в зависимости от семейства ОС
+          ansible.builtin.yum:
+            update_cache: true
+          when: ansible_os_family == "RedHat"
+        - name: Add repo Gitlab to repo list
+        # Запускаем скрипт по добавлению Gitlab repo в repo list
+          ansible.builtin.command: bash "/home/{{ ansible_user }}/script.sh"
+        - name: Install runner
+        # Установка раннера
+          ansible.builtin.package:
+            name: gitlab-runner
+            state: present
+- name: Registration runners
+  block:
+    - name: Get auth token
+      ansible.builtin.command: cat "{{ gitlab_home }}/{{ executor_type }}/token"
+      register: auth_token
+    - name: Registration of Docker runner
+    # Регистрируем docker раннер полученным токеном
+      ansible.builtin.command: >
+        docker exec docker-runner gitlab-runner register --non-interactive --url "{{ url_gitlab }}"
+        --docker-privileged --token "{{ auth_token.stdout }}" --executor "{{ executor_type }}"
+        --docker-image "ubuntu:20.04" --description "docker-runner" --docker-volumes "/certs/client"
+      when: executor_type == "docker"
+    - name: Registration of shell runner
+    # Регистрируем shell раннер
+      ansible.builtin.command: >
+        gitlab-runner register --non-interactive --url {{ url_gitlab }} --token {{ auth_token.stdout }} --executor {{ executor_type }}
+        --description "{{ executor_type }}-runner" --tls-ca-file "{{gitlab_home}}/config/ssl/{{ cert_name  }}"
+      when: executor_type == "shell"
+    - name: Registration of ssh runner
+    # Регистрируем ssh раннер
+      ansible.builtin.command: >
+        gitlab-runner register
+        --non-interactive --url {{ url_gitlab }} --token {{ auth_token.stdout }} --executor {{ executor_type }}
+        --description "{{ executor_type }}-runner"
+        --tls-ca-file "{{gitlab_home}}/config/ssl/{{ cert_name  }}"
+        --ssh-user {{ ssh_user }} --ssh-identity-file {{ ssh_private }}
+        --ssh-host {{ ansible_host }} --ssh-port {{ ansible_port }}
+      when: executor_type == "ssh"
