@@ -1,0 +1,37 @@
+---
+- name: Install Gitlab
+  hosts: gitlab_server
+  gather_facts: false
+  vars:
+    gitlab_home: /srv/gitlab
+  tasks:
+    - name: Pull image
+        # Пулим образ гитлаба
+      community.docker.docker_image_pull:
+        name: gitlab/gitlab-ce:18.0.5-ce.0
+        platform: amd64
+        pull: "not_present"
+    - name: Start container
+    # Стартуем контейнер с гитлабом
+      community.docker.docker_container:
+        detach: true
+        image: gitlab/gitlab-ce:18.0.5-ce.0
+        name: Gitlab
+        restart_policy: always
+        env:
+          GITLAB_OMNIBUS_CONFIG: external_url '{{ url_gitlab }}'
+          GITLAB_SSL_CERTIFICATE: "/opt/certs/rootCA.crt"
+          GITLAB_SSL_KEY: "/opt/certs/rootCA.key"
+        ports:
+          - "80:80"
+          - "443:443"
+          - "22:22"
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+          - "{{ gitlab_home }}/config:/etc/gitlab"
+          - "{{ gitlab_home }}/logs:/var/log/gitlab"
+          - "{{ gitlab_home }}/data:/var/opt/gitlab"
+          - "/opt/certs:/opt/certs"
+        networks:
+          - name: "{{ network_name }}"
+        shm_size: '256m'
