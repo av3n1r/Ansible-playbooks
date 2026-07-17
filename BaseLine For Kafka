@@ -1,0 +1,133 @@
+---
+- name: Install Kafka
+  hosts: node
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Prepare OS
+      block:
+
+        - name: Update repo list
+        # Добавляем необходимые линки на репозитории Трикси
+          ansible.builtin.copy:
+            dest: /etc/apt/sources.list
+            content: |
+              deb https://deb.debian.org/debian/ trixie contrib main non-free non-free-firmware
+              # deb-src https://deb.debian.org/debian/ trixie contrib main non-free non-free-firmware
+
+              deb https://deb.debian.org/debian/ trixie-updates contrib main non-free non-free-firmware
+              # deb-src https://deb.debian.org/debian/ trixie-updates contrib main non-free non-free-firmware
+
+              deb https://deb.debian.org/debian/ trixie-proposed-updates contrib main non-free non-free-firmware
+              # deb-src https://deb.debian.org/debian/ trixie-proposed-updates contrib main non-free non-free-firmware
+
+              deb https://deb.debian.org/debian/ trixie-backports contrib main non-free non-free-firmware
+              # deb-src https://deb.debian.org/debian/ trixie-backports contrib main non-free non-free-firmware
+
+              deb https://security.debian.org/debian-security/ trixie-security contrib main non-free non-free-firmware
+              # deb-src https://security.debian.org/debian-security/ trixie-security contrib main non-free non-free-firmware
+            mode: '0622'
+            owner: root
+            group: root
+        - name: Update and Upgrade
+        # Обновляем кэш, делаем апгрейд и устанавливаем пакеты
+          ansible.builtin.apt:
+            update_cache: true
+        - name: Upgrade
+          ansible.builtin.apt:
+            upgrade: true
+        - name: Install
+          ansible.builtin.apt:
+            name:
+              - sudo
+              - default-jdk
+              - ca-certificates
+              - curl
+        - name: Add group
+          ansible.builtin.group:
+            name: kafka
+        - name: Add kafka user and group
+          ansible.builtin.user:
+            name: kafka
+            groups:
+              - kafka
+            shell: /bin/bash
+            append: true
+            create_home: false
+        - name: Grant sudo for avenir
+          community.general.sudoers:
+            name: avenir
+            user: avenir
+            commands: ALL
+        - name: Grant sudoers for kafka
+          community.general.sudoers:
+            name: kafka
+            user: kafka
+            commands:
+              - /opt/kafka
+              - /bin/systemctl restart kafka
+              - /bin/systemctl reload kafka
+              - /bin/systemctl start kafka
+              - /bin/systemctl stop kafka
+        - name: Directory for kafka
+          ansible.builtin.file:
+            path: /opt/kafka
+            state: directory
+            mode: '0662'
+            owner: kafka
+            group: kafka
+        - name: Directory for kafka lib
+          ansible.builtin.file:
+            path: /var/lib/kafka-logs
+            state: directory
+            mode: '0662'
+            owner: kafka
+            group: kafka
+        - name: Directory for kafka log
+          ansible.builtin.file:
+            path: /var/log/kafka
+            state: directory
+            mode: '0662'
+            owner: kafka
+            group: kafka
+        - name: Get kafka
+          ansible.builtin.get_url:
+            url: https://dlcdn.apache.org/kafka/4.1.0/kafka_2.13-4.1.0.tgz
+            dest: /opt/kafka_2.13-4.1.0.tgz
+            mode: '0662'
+        - name: Extract kafka
+          ansible.builtin.unarchive:
+            src: /opt/kafka_2.13-4.1.0.tgz
+            remote_src: true
+            dest: /opt/kafka/
+            extra_opts: [--strip-components=1]
+            mode: '0662'
+            owner: kafka
+            group: kafka
+        - name: Copy config
+          ansible.builtin.copy:
+            src: ./server.properties
+            dest: /opt/kafka/config/server.properties
+            owner: kafka
+            group: kafka
+            mode: '0662'
+        - name: Replace node id
+          ansible.builtin.replace:
+            path: /opt/kafka/config/server.properties
+            regexp: 'node.id=1'
+            replace: 'node.id=2'
+        - name: Replace listeners
+          ansible.builtin.replace:
+            path: /opt/kafka/config/server.properties
+            regexp: '10.4.100.146'
+            replace: "{{ ne_ip }}"
+        - name: Format storage
+          ansible.builtin.command:
+            argv:
+              - /opt/kafka/bin/kafka-storage.sh
+              - format
+              - -t
+              - "{{ cluster_id }}"
+              - -c
+              - /opt/kafka/config/server.properties
+            creates: /var/lib/kafka/server.properties
